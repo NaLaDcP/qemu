@@ -38,13 +38,30 @@
 #define TYPE_MPC8XXX_GPIO "mpc8xxx_gpio"
 OBJECT_DECLARE_SIMPLE_TYPE(MPC8XXXGPIOState, MPC8XXX_GPIO)
 #define MSG_MAX 8192
+
+#define REMOTE_GPIO_MAGICK (0xABCD)
+
 typedef struct {
-      uint8_t magick[2];
+      uint16_t magic;
       uint32_t pin;
       uint32_t state;
-} gpio_msg;
+} gpio_msg_t;
 
-#define REMOTE_GPIO_MAGICK (0x6910)
+static void make_msg(gpio_msg_t * msg, uint32_t pin, uint32_t state) {
+    msg->magic = REMOTE_GPIO_MAGICK;
+    msg->pin = pin;
+    msg->state = state;
+}
+
+static bool check_msg(gpio_msg_t * msg) {
+    if ((msg->magic != REMOTE_GPIO_MAGICK) || (msg->pin > 32) || (msg->state > 1)) {
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
 
 struct MPC8XXXGPIOState {
     SysBusDevice parent_obj;
@@ -82,19 +99,6 @@ static const VMStateDescription vmstate_mpc8xxx_gpio = {
 
 static void mpc8xxx_gpio_update(MPC8XXXGPIOState *s)
 {
-             gpio_msg msg;
-                msg.magick[0] = 0x12;
-                msg.magick[1] = 0x34;
-                msg.pin = s->ier;
-                msg.state = s->imr;
-                /* Send the new value */
-                mq_send(s->mq_from_qemu,(const char *)&msg,sizeof(msg),0);
-                msg.magick[0] = 0x56;
-                msg.magick[1] = 0x78;
-                msg.pin = !!(s->ier & s->imr);
-                msg.state = 0;
-                /* Send the new value */
-                mq_send(s->mq_from_qemu,(const char *)&msg,sizeof(msg),0);
     qemu_set_irq(s->irq, !!(s->ier & s->imr));
 }
 
@@ -132,9 +136,7 @@ static void mpc8xxx_write_data(MPC8XXXGPIOState *s, uint32_t new_data)
     uint32_t diff = old_data ^ new_data;
     int i;
 
-    gpio_msg msg;
-    msg.magick[0] = 0x69;
-    msg.magick[1] = 0x10;
+    gpio_msg_t msg;
 
     qemu_mutex_lock(&s->dat_lock);
     for (i = 0; i < 32; i++) {
@@ -144,14 +146,11 @@ static void mpc8xxx_write_data(MPC8XXXGPIOState *s, uint32_t new_data)
         }
 
         if (s->dir & mask) {
-
-            msg.pin = i;
-            msg.state = (diff & mask) ? 1 : 0;
-
             /* Output */
             qemu_set_irq(s->out[i], (new_data & mask) != 0);
 
             /* Send the new value */
+            make_msg(&msg, i, (diff & mask) ? 1 : 0);
             mq_send(s->mq_from_qemu,(const char *)&msg,sizeof(msg),0);
         }
     }
@@ -241,7 +240,7 @@ static void * remote_gpio_thread(void * arg)
     MPC8XXXGPIOState *s = (MPC8XXXGPIOState *)arg;
     //Here we receive the data from the queue
     char buf[MSG_MAX];
-    gpio_msg * mg = (gpio_msg *)&buf;
+    gpio_msg_t * mg = (gpio_msg_t *)&buf;
  
     while(1) {
         int res = mq_receive(s->mq_to_qemu,buf,MSG_MAX,NULL);
@@ -249,32 +248,17 @@ static void * remote_gpio_thread(void * arg)
             perror("I can't receive");
             exit(1);
         }
-        if(res != sizeof(gpio_msg)) continue;
-        if((int) mg->magick[0]*256+mg->magick[1] != REMOTE_GPIO_MAGICK) {
-            printf("Wrong message received");
+
+        if(res != sizeof(gpio_msg_t)) continue;
+
+        if (!check_msg(mg)) {
+            make_msg(mg, 0xFFFFFFFF, 0xFFFFFFFF);
+            mq_send(s->mq_from_qemu,(const char *)mg,sizeof(gpio_msg_t),0);
+            continue;
         }
-        if(mg->pin < 32) {
-            mq_send(s->mq_from_qemu,(const char *)mg,sizeof(gpio_msg),0);
-            bql_lock();
-            mpc8xxx_gpio_set_irq(arg,mg->pin,mg->state);
-            bql_unlock();
-        } else if(mg->pin == 255) {
-            //This is a special "reconnect message" it enforces sending state of all pins
-            int i;
-            uint32_t dat = s->dat;
-            uint32_t mask = 0x80000000;
-            for(i=0;i<32;i++) {
-                gpio_msg msg;
-                msg.magick[0] = 0x69;
-                msg.magick[1] = 0x10;
-                msg.pin = i;
-                msg.state = (dat & mask) ? 1 : 0;
-                /* Send the new value */
-                mq_send(s->mq_from_qemu,(const char *)&msg,sizeof(msg),0);
-                /* Update the bit in the dat field */
-                mask >>= 1;
-            }
-        }
+        bql_lock();
+        mpc8xxx_gpio_set_irq(arg,mg->pin,mg->state);
+        bql_unlock();
     }
 }
 
@@ -295,14 +279,14 @@ static void mpc8xxx_gpio_initfn(Object *obj)
     mqd_t mq = mq_open("/from_qemu",O_CREAT | O_WRONLY,S_IRUSR | S_IWUSR,NULL);
 
     if(mq<0) {
-        perror("I can't open mq");
+        perror("cannot open /from_qemu");
         exit(1);
     }
     s->mq_from_qemu = mq;
 
     mq = mq_open("/to_qemu",O_CREAT | O_RDONLY,S_IRUSR | S_IWUSR,NULL);
     if(mq<0) {
-        perror("I can't open mq");
+        perror("cannot open /to_qemu");
         exit(1);
     }
     s->mq_to_qemu = mq;
