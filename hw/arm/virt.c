@@ -192,6 +192,7 @@ static const MemMapEntry base_memmap[] = {
     [VIRT_SECURE_GPIO] =        { 0x090b0000, 0x00001000 },
     [VIRT_ACPI_PCIHP] =         { 0x090c0000, ACPI_PCIHP_SIZE },
     [VIRT_MMIO] =               { 0x0a000000, 0x00000200 },
+    [VIRT_MPC8xxx_GPIO] =       { 0x0a001000, 0x00001000 },
     /* ...repeating for a total of NUM_VIRTIO_TRANSPORTS, each of that size */
     [VIRT_PLATFORM_BUS] =       { 0x0c000000, 0x02000000 },
     [VIRT_SECURE_MEM] =         { 0x0e000000, 0x01000000 },
@@ -242,6 +243,7 @@ static const int a15irqmap[] = {
     [VIRT_GPIO] = 7,
     [VIRT_UART1] = 8,
     [VIRT_ACPI_GED] = 9,
+    [VIRT_MPC8xxx_GPIO] = 10, 
     [VIRT_MMIO] = 16, /* ...to 16 + NUM_VIRTIO_TRANSPORTS - 1 */
     [VIRT_GIC_V2M] = 48, /* ...to 48 + NUM_GICV2M_SPIS - 1 */
     [VIRT_SMMU] = 74,    /* ...to 74 + NUM_SMMU_IRQS - 1 */
@@ -1169,6 +1171,38 @@ static void create_gpio_devices(const VirtMachineState *vms, int gpio,
         create_secure_gpio_pwr(ms->fdt, pl061_dev, phandle);
     }
 }
+static void create_mpc8xxx_gpio(const VirtMachineState *vms,
+                                int gpio,
+                                MemoryRegion *mem)
+{
+    char *nodename;
+    DeviceState *dev;
+    hwaddr base = vms->memmap[gpio].base;
+    hwaddr size = vms->memmap[gpio].size;
+    int irq = vms->irqmap[gpio];
+    const char compat[] = "fsl,qoriq-gpio";
+    SysBusDevice *s;
+    MachineState *ms = MACHINE(vms);
+
+    dev = qdev_new("mpc8xxx_gpio");
+    s = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(s, &error_fatal);
+    memory_region_add_subregion(mem, base, sysbus_mmio_get_region(s, 0));
+    sysbus_connect_irq(s, 0, qdev_get_gpio_in(vms->gic, irq));
+
+    uint32_t phandle = qemu_fdt_alloc_phandle(ms->fdt);
+    nodename = g_strdup_printf("/mpc8xxx@%" PRIx64, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
+    qemu_fdt_setprop_cells(ms->fdt, nodename, "interrupts",
+                           GIC_FDT_IRQ_TYPE_SPI, irq,
+                           GIC_FDT_IRQ_FLAGS_LEVEL_HI);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "clocks", vms->clock_phandle);
+    qemu_fdt_setprop_string(ms->fdt, nodename, "clock-names", "apb_pclk");
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "phandle", phandle);
+}
+
 
 static void create_virtio_devices(const VirtMachineState *vms)
 {
@@ -2524,6 +2558,8 @@ static void machvirt_init(MachineState *machine)
     if (vms->secure && !vmc->no_secure_gpio) {
         create_gpio_devices(vms, VIRT_SECURE_GPIO, secure_sysmem);
     }
+    
+     create_mpc8xxx_gpio(vms, VIRT_MPC8xxx_GPIO, sysmem);
 
      /* connect powerdown request */
      vms->powerdown_notifier.notify = virt_powerdown_req;
