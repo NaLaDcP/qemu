@@ -33,6 +33,7 @@
 #include <sys/stat.h> 
 #include "qemu/main-loop.h"
 
+ //TODO add proper error handling for mq functions and message creation
 
 #define TYPE_MPC8XXX_GPIO "mpc8xxx_gpio"
 OBJECT_DECLARE_SIMPLE_TYPE(MPC8XXXGPIOState, MPC8XXX_GPIO)
@@ -219,7 +220,8 @@ static void mpc8xxx_gpio_set_irq(void * opaque, int irq, int level)
         if (level)
             s->dat |= mask;
 
-        if (!(s->icr & mask) || (old_value && !level)) {
+        // TODO corriger s->icr & irq car c'est un bitmak (icr) et pas un index (irq)
+        if (!(s->icr & irq) || (old_value && !level)) {
             s->ier |= mask;
         }
 
