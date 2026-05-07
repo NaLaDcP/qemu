@@ -282,8 +282,6 @@ static void * remote_gpio_thread(void * arg)
         if(res != sizeof(gpio_msg_t)) continue;
 
         if (!check_msg(mg)) {
-            make_pin_msg(mg, 0xFFFFFFFF, 0xFFFFFFFF);
-            mq_send(s->mq_from_qemu,(const char *)mg,sizeof(gpio_msg_t),0);
             continue;
         }
 

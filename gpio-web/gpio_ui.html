@@ -93,9 +93,9 @@
     .pin-btn.in:hover    { filter: brightness(1.15); }
 
     /* ── Output (piloté par le firmware, lecture seule) ── */
-    .pin-btn.out         { cursor: not-allowed; pointer-events: none; }
-    .pin-btn.out.off     { background: #1a2030; border-color: #1565c0; color: #5c8adc; }
-    .pin-btn.out.on      { background: #1b4332; border-color: #4caf50; color: #4caf50; }
+    .pin-btn.out         { cursor: not-allowed; pointer-events: none; opacity: 0.45; }
+    .pin-btn.out.off     { background: #2e2e2e; border-color: #505050; color: #777; }
+    .pin-btn.out.on      { background: #3c3c3c; border-color: #686868; color: #aaa; }
 
     /* ── Sous-éléments ── */
     .pin-header {
@@ -107,8 +107,8 @@
 
     .pin-num { font-size: 0.62rem; color: #666; }
     .pin-btn.in.on  .pin-num { color: #f9a825; }
-    .pin-btn.out.on .pin-num { color: #81c784; }
-    .pin-btn.out.off .pin-num { color: #5c8adc; }
+    .pin-btn.out.on .pin-num  { color: #888; }
+    .pin-btn.out.off .pin-num { color: #666; }
 
     .pin-badges { display: flex; gap: 2px; }
 
@@ -119,7 +119,7 @@
       font-weight: bold;
     }
     .badge-unk  { background: #2a2a3a; color: #555; }
-    .badge-out  { background: #0d47a1; color: #90caf9; }
+    .badge-out  { background: #2a2a2a; color: #555; }
     .badge-in   { background: #2e2e00; color: #fdd835; }
     .badge-od   { background: #4a2800; color: #ffb74d; }
 

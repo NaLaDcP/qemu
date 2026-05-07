@@ -5,7 +5,6 @@ const fs   = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const koffi = require('koffi');
-const { promisify } = require('util');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MAGIC          = 0xABCD;
@@ -16,8 +15,10 @@ const PORT           = 8080;
 const MSG_SIZE       = 12;
 const MQ_BUF         = 8192;
 const RETRY_MS       = 3000;
+const POLL_MS        = 20;    // poll /from_qemu every 20ms
 const O_RDONLY       = 0;
 const O_WRONLY       = 1;
+const O_NONBLOCK     = 0x800;
 
 const REG_NAMES = { 0: 'dir', 4: 'odr', 8: 'dat', 12: 'ier', 16: 'imr', 20: 'icr' };
 
@@ -28,11 +29,10 @@ for (const name of ['librt.so.1', 'libc.so.6']) {
 }
 if (!lib) { console.error('Cannot load librt/libc'); process.exit(1); }
 
-const mq_open          = lib.func('int mq_open(const char *name, int oflag)');
-const mq_close         = lib.func('int mq_close(int mqdes)');
-const mq_send          = lib.func('int mq_send(int mqdes, const uint8_t *msg, size_t len, unsigned int prio)');
-const mq_receive       = lib.func('long mq_receive(int mqdes, uint8_t *msg, size_t len, unsigned int *prio)');
-const mq_receive_async = promisify(mq_receive);
+const mq_open    = lib.func('int mq_open(const char *name, int oflag)');
+const mq_close   = lib.func('int mq_close(int mqdes)');
+const mq_send    = lib.func('int mq_send(int mqdes, const uint8_t *msg, size_t len, unsigned int prio)');
+const mq_receive = lib.func('long mq_receive(int mqdes, uint8_t *buf, size_t len, void *prio)');
 
 // ── Message encoding ──────────────────────────────────────────────────────────
 function packMsg(type, pin, state) {
@@ -58,6 +58,7 @@ function unpackMsg(buf) {
 // ── State ─────────────────────────────────────────────────────────────────────
 let mqFromFd      = -1;
 let mqToFd        = -1;
+let pollTimer     = null;
 let qemuConnected = false;
 const regState    = {};
 const clients     = new Set();
@@ -78,39 +79,34 @@ function setConnected(val) {
 }
 
 function closeMqueues() {
+  if (pollTimer)  { clearInterval(pollTimer); pollTimer = null; }
   if (mqFromFd >= 0) { mq_close(mqFromFd); mqFromFd = -1; }
   if (mqToFd   >= 0) { mq_close(mqToFd);   mqToFd   = -1; }
 }
 
 process.on('exit', closeMqueues);
 
-// ── Read loop (runs while connected) ─────────────────────────────────────────
-async function readLoop() {
-  const buf  = Buffer.alloc(MQ_BUF);
-  const prio = [0];
-  while (true) {
-    let n;
-    try {
-      n = await mq_receive_async(mqFromFd, buf, buf.length, prio);
-    } catch (e) {
-      console.error('mq_receive error:', e.message);
-      closeMqueues();
-      setConnected(false);
-      scheduleRetry();
-      return;
-    }
-    if (n < MSG_SIZE) continue;
-    const msg = unpackMsg(buf);
-    if (!msg) continue;
+// ── Poll loop — reads all pending messages from /from_qemu ────────────────────
+const pollBuf = Buffer.alloc(MQ_BUF);
 
-    if (msg.type === MSG_TYPE_PIN) {
-      broadcast({ type: 'pin_update', pin: msg.pin, state: msg.state });
-    } else if (msg.type === MSG_TYPE_REG) {
-      const offset = msg.pin;
-      regState[offset] = msg.state;
-      const name = REG_NAMES[offset] ?? `reg_${offset}`;
-      broadcast({ type: 'reg_update', offset, name, value: msg.state });
-    }
+function handleMsg(msg) {
+  if (msg.type === MSG_TYPE_PIN) {
+    broadcast({ type: 'pin_update', pin: msg.pin, state: msg.state });
+  } else if (msg.type === MSG_TYPE_REG) {
+    const offset = msg.pin;
+    regState[offset] = msg.state;
+    const name = REG_NAMES[offset] ?? `reg_${offset}`;
+    broadcast({ type: 'reg_update', offset, name, value: msg.state });
+  }
+}
+
+function poll() {
+  while (true) {
+    const n = mq_receive(mqFromFd, pollBuf, pollBuf.length, null);
+    if (n < 0) break;          // EAGAIN — queue empty, stop for now
+    if (n < MSG_SIZE) continue;
+    const msg = unpackMsg(pollBuf);
+    if (msg) handleMsg(msg);
   }
 }
 
@@ -120,7 +116,8 @@ function scheduleRetry() {
 }
 
 function tryConnect() {
-  const fromFd = mq_open('/from_qemu', O_RDONLY);
+  closeMqueues();
+  const fromFd = mq_open('/from_qemu', O_RDONLY | O_NONBLOCK);
   const toFd   = mq_open('/to_qemu',   O_WRONLY);
   if (fromFd < 0 || toFd < 0) {
     if (fromFd >= 0) mq_close(fromFd);
@@ -132,7 +129,7 @@ function tryConnect() {
   mqToFd   = toFd;
   setConnected(true);
   mq_send(mqToFd, packMsg(MSG_TYPE_QUERY, 0, 0), MSG_SIZE, 0);
-  readLoop();
+  pollTimer = setInterval(poll, POLL_MS);
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
