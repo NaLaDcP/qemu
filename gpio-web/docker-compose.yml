@@ -23,3 +23,5 @@ services:
     restart: unless-stopped
     depends_on:
       - qemu
+    volumes:
+      - ${PINS_FILE:-/dev/null}:/config/pins.json:ro

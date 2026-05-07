@@ -41,7 +41,7 @@
 
     /* ── Panneau GPIO ── */
     #pins-panel {
-      width: 460px;
+      width: 320px;
       flex-shrink: 0;
       display: flex;
       flex-direction: column;
@@ -61,25 +61,26 @@
 
     #pins-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
-      padding: 12px;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 4px;
+      padding: 8px;
       overflow-y: auto;
       flex: 1;
     }
 
     /* ── Base pin button ── */
     .pin-btn {
-      padding: 6px 4px;
+      padding: 4px 2px;
       border: 1px solid #333;
-      border-radius: 6px;
+      border-radius: 4px;
       background: #22223b;
       color: #aaa;
       cursor: pointer;
       font-family: monospace;
-      font-size: 0.75rem;
+      font-size: 0.65rem;
       text-align: center;
       user-select: none;
+      line-height: 1.2;
       transition: background 0.12s, color 0.12s, border-color 0.12s;
     }
 
@@ -93,37 +94,13 @@
     .pin-btn.in:hover    { filter: brightness(1.15); }
 
     /* ── Output (piloté par le firmware, lecture seule) ── */
-    .pin-btn.out         { cursor: not-allowed; pointer-events: none; opacity: 0.45; }
-    .pin-btn.out.off     { background: #2e2e2e; border-color: #505050; color: #777; }
-    .pin-btn.out.on      { background: #3c3c3c; border-color: #686868; color: #aaa; }
+    .pin-btn.out         { cursor: not-allowed; pointer-events: none; }
+    .pin-btn.out.off     { background: #2e2e2e; border-color: #505050; color: #777; opacity: 0.45; }
+    .pin-btn.out.on      { background: #3d1f00; border-color: #e65c00; color: #ff8c00; }
 
     /* ── Sous-éléments ── */
-    .pin-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 4px;
-    }
-
-    .pin-num { font-size: 0.62rem; color: #666; }
-    .pin-btn.in.on  .pin-num { color: #f9a825; }
-    .pin-btn.out.on .pin-num  { color: #888; }
-    .pin-btn.out.off .pin-num { color: #666; }
-
-    .pin-badges { display: flex; gap: 2px; }
-
-    .badge {
-      font-size: 0.52rem;
-      padding: 1px 3px;
-      border-radius: 3px;
-      font-weight: bold;
-    }
-    .badge-unk  { background: #2a2a3a; color: #555; }
-    .badge-out  { background: #2a2a2a; color: #555; }
-    .badge-in   { background: #2e2e00; color: #fdd835; }
-    .badge-od   { background: #4a2800; color: #ffb74d; }
-
-    .pin-state  { display: block; font-size: 0.82rem; font-weight: bold; margin-top: 2px; }
+    .pin-num   { font-size: 0.58rem; color: #555; margin-bottom: 1px; }
+    .pin-state { font-size: 0.7rem; font-weight: bold; }
 
     /* ── Panneau Log ── */
     #log-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -193,6 +170,7 @@
   const WS_URL = `ws://${location.host}/ws`;
 
   const pinStates = new Array(N_PINS).fill(0);
+  const pinNames  = {};
   let dirReg = null;   // null = inconnu
   let odrReg = 0;
   let ws = null;
@@ -205,13 +183,8 @@
     btn.id = `pin-${i}`;
     btn.className = "pin-btn";
     btn.innerHTML =
-      `<div class="pin-header">
-         <span class="pin-num">PIN ${String(i).padStart(2,"0")}</span>
-         <span class="pin-badges">
-           <span class="badge badge-unk" id="dir-${i}">?</span>
-         </span>
-       </div>
-       <span class="pin-state">-</span>`;
+      `<div class="pin-num">P${String(i).padStart(2,"0")}</div>
+       <div class="pin-state" id="state-${i}">-</div>`;
     btn.addEventListener("click", () => onPinClick(i));
     grid.appendChild(btn);
   }
@@ -226,46 +199,23 @@
     return !!(odrReg & (0x80000000 >>> i));
   }
 
-  function refreshButton(i) {
-    const btn      = document.getElementById(`pin-${i}`);
-    const dirBadge = document.getElementById(`dir-${i}`);
-    const state    = pinStates[i];
-    const out      = isOutput(i);  // null | true | false
-    const od       = isOD(i);
+  function pinLabel(i) {
+    return pinNames[i] ?? pinNames[String(i)] ?? `P${String(i).padStart(2,"0")}`;
+  }
 
-    // Classes CSS
+  function refreshButton(i) {
+    const btn   = document.getElementById(`pin-${i}`);
+    const state = pinStates[i];
+    const out   = isOutput(i);
+
     let cls = "pin-btn";
     if (out === true)       cls += " out " + (state ? "on" : "off");
     else if (out === false) cls += " in "  + (state ? "on" : "off");
     btn.className = cls;
 
-
-    // Badge direction
-    if (out === null) {
-      dirBadge.className = "badge badge-unk";
-      dirBadge.textContent = "?";
-    } else if (out) {
-      dirBadge.className = "badge badge-out";
-      dirBadge.textContent = "OUT";
-    } else {
-      dirBadge.className = "badge badge-in";
-      dirBadge.textContent = "IN";
-    }
-
-    // Badge OD
-    let odBadge = document.getElementById(`od-${i}`);
-    if (od && !odBadge) {
-      odBadge = document.createElement("span");
-      odBadge.id = `od-${i}`;
-      odBadge.className = "badge badge-od";
-      odBadge.textContent = "OD";
-      dirBadge.parentNode.appendChild(odBadge);
-    } else if (!od && odBadge) {
-      odBadge.remove();
-    }
-
-    btn.querySelector(".pin-state").textContent =
-      out === null ? "-" : (state ? "ON" : "OFF");
+    btn.title = `P${String(i).padStart(2,"0")}${pinNames[i] ? " – " + pinNames[i] : ""}`;
+    btn.querySelector(".pin-num").textContent   = pinLabel(i);
+    document.getElementById(`state-${i}`).textContent = out === null ? "?" : (state ? "1" : "0");
   }
 
   function applyRegUpdate(offset, value) {
@@ -338,7 +288,10 @@
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === "pin_update") {
+        if (msg.type === "pin_names") {
+          Object.assign(pinNames, msg.names);
+          for (let i = 0; i < N_PINS; i++) refreshButton(i);
+        } else if (msg.type === "pin_update") {
           pinStates[msg.pin] = msg.state;
           refreshButton(msg.pin);
           addLog("in", `pin=${String(msg.pin).padStart(2,"0")} state=${msg.state ? "ON" : "OFF"}`);

@@ -1,0 +1,9 @@
+{
+  "0":  "LED_RED",
+  "1":  "LED_GREEN",
+  "2":  "LED_BLUE",
+  "5":  "BTN_RESET",
+  "6":  "BTN_USER",
+  "16": "UART_TX",
+  "17": "UART_RX"
+}

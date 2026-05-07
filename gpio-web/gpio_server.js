@@ -6,6 +6,13 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const koffi = require('koffi');
 
+// ── Pin names (optional — mounted at /config/pins.json) ──────────────────────
+const pinNames = {};
+try {
+  Object.assign(pinNames, JSON.parse(fs.readFileSync('/config/pins.json', 'utf8')));
+  console.log('Loaded pin names from /config/pins.json');
+} catch (_) {}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MAGIC          = 0xABCD;
 const MSG_TYPE_PIN   = 0;
@@ -150,6 +157,7 @@ const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
   clients.add(ws);
+  ws.send(JSON.stringify({ type: 'pin_names', names: pinNames }));
   ws.send(JSON.stringify({ type: 'qemu_status', connected: qemuConnected }));
   for (const [offset, value] of Object.entries(regState)) {
     const o = Number(offset);
