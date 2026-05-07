@@ -39,29 +39,43 @@
 OBJECT_DECLARE_SIMPLE_TYPE(MPC8XXXGPIOState, MPC8XXX_GPIO)
 #define MSG_MAX 8192
 
-#define REMOTE_GPIO_MAGICK (0xABCD)
+#define REMOTE_GPIO_MAGICK  (0xABCD)
+#define MSG_TYPE_PIN_UPDATE 0
+#define MSG_TYPE_REG_DUMP   1
+#define MSG_TYPE_QUERY      2
 
 typedef struct {
-      uint16_t magic;
-      uint32_t pin;
-      uint32_t state;
+    uint16_t magic;
+    uint8_t  type;   /* MSG_TYPE_PIN_UPDATE ou MSG_TYPE_REG_DUMP */
+    uint8_t  pad;
+    uint32_t pin;    /* PIN_UPDATE: numéro de pin ; REG_DUMP: offset registre */
+    uint32_t state;  /* PIN_UPDATE: état 0/1    ; REG_DUMP: valeur registre  */
 } gpio_msg_t;
 
-static void make_msg(gpio_msg_t * msg, uint32_t pin, uint32_t state) {
+static void make_pin_msg(gpio_msg_t *msg, uint32_t pin, uint32_t state) {
     msg->magic = REMOTE_GPIO_MAGICK;
-    msg->pin = pin;
+    msg->type  = MSG_TYPE_PIN_UPDATE;
+    msg->pad   = 0;
+    msg->pin   = pin;
     msg->state = state;
 }
 
-static bool check_msg(gpio_msg_t * msg) {
-    if ((msg->magic != REMOTE_GPIO_MAGICK) || (msg->pin > 32) || (msg->state > 1)) {
-        return false;
-    }
-    else {
-        return true;
-    }
+static void make_reg_msg(gpio_msg_t *msg, uint32_t offset, uint32_t value) {
+    msg->magic = REMOTE_GPIO_MAGICK;
+    msg->type  = MSG_TYPE_REG_DUMP;
+    msg->pad   = 0;
+    msg->pin   = offset;
+    msg->state = value;
 }
 
+static bool check_msg(gpio_msg_t *msg) {
+    if (msg->magic != REMOTE_GPIO_MAGICK) return false;
+    if (msg->type == MSG_TYPE_PIN_UPDATE)
+        return (msg->pin < 32) && (msg->state <= 1);
+    if (msg->type == MSG_TYPE_QUERY)
+        return true;
+    return false;
+}
 
 struct MPC8XXXGPIOState {
     SysBusDevice parent_obj;
@@ -150,7 +164,7 @@ static void mpc8xxx_write_data(MPC8XXXGPIOState *s, uint32_t new_data)
             qemu_set_irq(s->out[i], (new_data & mask) != 0);
 
             /* Send the new value */
-            make_msg(&msg, i, (diff & mask) ? 1 : 0);
+            make_pin_msg(&msg, i, (new_data & mask) ? 1 : 0);
             mq_send(s->mq_from_qemu,(const char *)&msg,sizeof(msg),0);
         }
     }
@@ -169,12 +183,18 @@ static void mpc8xxx_gpio_write(void *opaque, hwaddr offset,
         return;
     }
 
+    gpio_msg_t msg;
+
     switch (offset) {
     case 0x0: /* Direction */
         s->dir = value;
+        make_reg_msg(&msg, 0x0, s->dir);
+        mq_send(s->mq_from_qemu, (const char *)&msg, sizeof(msg), 0);
         break;
     case 0x4: /* Open Drain */
         s->odr = value;
+        make_reg_msg(&msg, 0x4, s->odr);
+        mq_send(s->mq_from_qemu, (const char *)&msg, sizeof(msg), 0);
         break;
     case 0x8: /* Data */
         mpc8xxx_write_data(s, value);
@@ -235,6 +255,16 @@ static const MemoryRegionOps mpc8xxx_gpio_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
 };
 
+static void send_all_regs(MPC8XXXGPIOState *s) {
+    gpio_msg_t msg;
+    make_reg_msg(&msg, 0x0, s->dir);
+    mq_send(s->mq_from_qemu, (const char *)&msg, sizeof(msg), 0);
+    make_reg_msg(&msg, 0x4, s->odr);
+    mq_send(s->mq_from_qemu, (const char *)&msg, sizeof(msg), 0);
+    make_reg_msg(&msg, 0x8, s->dat);
+    mq_send(s->mq_from_qemu, (const char *)&msg, sizeof(msg), 0);
+}
+
 static void * remote_gpio_thread(void * arg)
 {
     MPC8XXXGPIOState *s = (MPC8XXXGPIOState *)arg;
@@ -252,10 +282,16 @@ static void * remote_gpio_thread(void * arg)
         if(res != sizeof(gpio_msg_t)) continue;
 
         if (!check_msg(mg)) {
-            make_msg(mg, 0xFFFFFFFF, 0xFFFFFFFF);
+            make_pin_msg(mg, 0xFFFFFFFF, 0xFFFFFFFF);
             mq_send(s->mq_from_qemu,(const char *)mg,sizeof(gpio_msg_t),0);
             continue;
         }
+
+        if (mg->type == MSG_TYPE_QUERY) {
+            send_all_regs(s);
+            continue;
+        }
+
         bql_lock();
         mpc8xxx_gpio_set_irq(arg,mg->pin,mg->state);
         bql_unlock();
@@ -276,7 +312,7 @@ static void mpc8xxx_gpio_initfn(Object *obj)
     qdev_init_gpio_out(dev, s->out, 32);
 
     qemu_mutex_init(&s->dat_lock);
-    mqd_t mq = mq_open("/from_qemu",O_CREAT | O_WRONLY,S_IRUSR | S_IWUSR,NULL);
+    mqd_t mq = mq_open("/from_qemu",O_CREAT | O_WRONLY | O_NONBLOCK,S_IRUSR | S_IWUSR,NULL);
 
     if(mq<0) {
         perror("cannot open /from_qemu");

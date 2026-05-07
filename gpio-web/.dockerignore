@@ -1,0 +1,5 @@
+*
+!package.json
+!package-lock.json
+!gpio_server.js
+!gpio_ui.html

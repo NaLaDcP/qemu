@@ -1,0 +1,13 @@
+{
+  "name": "gpio-web",
+  "version": "1.0.0",
+  "description": "Interface web pour piloter les GPIO MPC8xxx via WebSocket + mqueue",
+  "main": "gpio_server.js",
+  "scripts": {
+    "start": "node gpio_server.js"
+  },
+  "dependencies": {
+    "koffi": "^2.0.0",
+    "ws": "^8.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+services:
+
+  qemu:
+    build:
+      context: ..                       # racine du dépôt QEMU
+      dockerfile: gpio-web/Dockerfile.qemu
+    ipc: shareable
+    stdin_open: true
+    tty: true
+    environment:
+      - IMAGE_FILE=/images/${IMAGE_FILENAME}
+    volumes:
+      - ${IMAGE_DIR}:/images:ro         # répertoire contenant le kernel sur l'hôte
+      - ./logs:/logs                    # irq.log accessible sur l'hôte
+
+  gpio-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    ipc: service:qemu
+    restart: unless-stopped
+    depends_on:
+      - qemu
